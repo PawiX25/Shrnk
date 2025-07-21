@@ -95,6 +95,10 @@ fun ShrnkApp() {
     var compressing by remember { mutableStateOf(false) }
     var progressMessage by remember { mutableStateOf("") }
     var progressFraction by remember { mutableStateOf(0f) }
+    
+    var selectedPreset by remember { mutableStateOf(VideoPreset.MEDIUM) }
+    var customSizeMb by remember { mutableStateOf("") }
+
 
     val openDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -118,7 +122,14 @@ fun ShrnkApp() {
                 val success = if (mime.startsWith("image")) {
                     MediaCompressor.compressImage(context, src, destUri)
                 } else {
-                    MediaCompressor.compressVideo(context, src, destUri) { frac ->
+                    val size = customSizeMb.toIntOrNull()
+                    MediaCompressor.compressVideo(
+                        context,
+                        src,
+                        destUri,
+                        preset = selectedPreset,
+                        maxFileSizeMb = size
+                    ) { frac ->
                         progressFraction = frac
                     }
                 }
@@ -236,6 +247,13 @@ fun ShrnkApp() {
                                     text = fileName ?: "Unknown file",
                                     style = MaterialTheme.typography.bodyLarge,
                                     textAlign = TextAlign.Center
+                                )
+                                Spacer(Modifier.height(24.dp))
+                                CompressionSettings(
+                                    selectedPreset = selectedPreset,
+                                    onPresetSelected = { selectedPreset = it },
+                                    customSizeMb = customSizeMb,
+                                    onCustomSizeChanged = { customSizeMb = it }
                                 )
                                 Spacer(Modifier.height(24.dp))
                                 Button(
