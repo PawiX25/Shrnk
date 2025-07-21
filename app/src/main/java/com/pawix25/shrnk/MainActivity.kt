@@ -1,0 +1,278 @@
+package com.pawix25.shrnk
+
+import android.net.Uri
+import android.content.Context
+import android.provider.OpenableColumns
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.pawix25.shrnk.ui.theme.ShrnkTheme
+import kotlinx.coroutines.launch
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
+
+fun getFileName(context: Context, uri: Uri?): String? {
+    uri ?: return null
+    // Try querying the content resolver first
+    if (uri.scheme == "content") {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index != -1) {
+                    return cursor.getString(index)
+                }
+            }
+        }
+    }
+    // Fallback to parsing the path segment
+    val path = uri.path ?: return null
+    val lastSlash = path.lastIndexOf('/')
+    return if (lastSlash != -1) path.substring(lastSlash + 1) else path
+}
+
+fun getFileSize(context: Context, uri: Uri?): Long {
+    uri ?: return 0L
+    if (uri.scheme == "content") {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cur ->
+            if (cur.moveToFirst()) {
+                val idx = cur.getColumnIndex(OpenableColumns.SIZE)
+                if (idx != -1) return cur.getLong(idx)
+            }
+        }
+    }
+    // fallback: open file descriptor
+    return try {
+        context.contentResolver.openFileDescriptor(uri, "r")?.statSize ?: 0L
+    } catch (e: Exception) {
+        0L
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            ShrnkTheme {
+                ShrnkApp()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ShrnkApp() {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    var compressing by remember { mutableStateOf(false) }
+    var progressMessage by remember { mutableStateOf("") }
+    var progressFraction by remember { mutableStateOf(0f) }
+
+    val openDocLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedUri = uri
+        }
+    }
+
+    val handleSave: (Uri?) -> Unit = { destUri: Uri? ->
+        val src = selectedUri
+        if (destUri != null && src != null) {
+            compressing = true
+            coroutineScope.launch {
+                val mime = context.contentResolver.getType(src) ?: ""
+                val beforeBytes = getFileSize(context, src)
+
+                progressFraction = 0f
+                progressMessage = if (mime.startsWith("image")) "Compressing image…" else "Compressing video…"
+
+                val success = if (mime.startsWith("image")) {
+                    MediaCompressor.compressImage(context, src, destUri)
+                } else {
+                    MediaCompressor.compressVideo(context, src, destUri) { frac ->
+                        progressFraction = frac
+                    }
+                }
+
+                val afterBytes = if (success) getFileSize(context, destUri) else 0L
+
+                compressing = false
+
+                val human = { size: Long ->
+                    if (size <= 0) "0 B" else {
+                        val units = arrayOf("B","KB","MB","GB")
+                        var s = size.toDouble()
+                        var idx = 0
+                        while (s >= 1024 && idx < units.lastIndex) { s /= 1024; idx++ }
+                        String.format("%.1f %s", s, units[idx])
+                    }
+                }
+
+                val resultMessage = if (success) {
+                    val saved = beforeBytes - afterBytes
+                    "Success: ${human(beforeBytes)} → ${human(afterBytes)} (saved ${human(saved)})"
+                } else {
+                    "Compression failed."
+                }
+
+                snackbarHostState.showSnackbar(resultMessage)
+                if (success) {
+                    selectedUri = null
+                }
+            }
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Save cancelled.")
+            }
+        }
+    }
+
+    val imageDocLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/jpeg")
+    ) { destUri -> handleSave(destUri) }
+
+    val videoDocLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("video/mp4")
+    ) { destUri -> handleSave(destUri) }
+
+    val fileName = remember(selectedUri) { getFileName(context, selectedUri) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Shrnk - Media Compressor") }
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (compressing) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(48.dp), progress = progressFraction)
+                    Spacer(Modifier.height(16.dp))
+                    val pct = String.format("%.0f%%", progressFraction * 100)
+                    Text("$progressMessage $pct", style = MaterialTheme.typography.bodyLarge)
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    if (selectedUri == null) {
+                        Icon(
+                            Icons.Filled.FolderOpen,
+                            contentDescription = "Select a file",
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "Select an image or video to shrink",
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        Button(
+                            onClick = { openDocLauncher.launch(arrayOf("image/*", "video/*")) },
+                            modifier = Modifier.fillMaxWidth(0.8f)
+                        ) {
+                            Text("Select File")
+                        }
+                    } else {
+                        Card(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .padding(16.dp)
+                                    .fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "File Ready to Shrink",
+                                    style = MaterialTheme.typography.headlineSmall
+                                )
+                                Spacer(Modifier.height(16.dp))
+                                Text(
+                                    text = fileName ?: "Unknown file",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(Modifier.height(24.dp))
+                                Button(
+                                    onClick = {
+                                        val mime = context.contentResolver.getType(selectedUri!!) ?: ""
+                                        val suggestedName = if (mime.startsWith("image")) {
+                                            "shrnk_${fileName ?: "image"}.jpg"
+                                        } else {
+                                            "shrnk_${fileName ?: "video"}.mp4"
+                                        }
+                                        if (mime.startsWith("image")) {
+                                            imageDocLauncher.launch(suggestedName)
+                                        } else {
+                                            videoDocLauncher.launch(suggestedName)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Choose Destination & Compress")
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        TextButton(onClick = { selectedUri = null }) {
+                            Text("Clear Selection")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ShrnkPreview() {
+    ShrnkTheme {
+        ShrnkApp()
+    }
+}
