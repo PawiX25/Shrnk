@@ -21,6 +21,11 @@ import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.VideoFile
+import androidx.compose.material.icons.outlined.PhotoSizeSelectLarge
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -30,10 +35,30 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.painterResource
 
 fun getFileName(context: Context, uri: Uri?): String? {
     uri ?: return null
@@ -84,7 +109,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalAnimationApi::class)
 @Composable
 fun ShrnkApp() {
     val context = LocalContext.current
@@ -98,6 +123,17 @@ fun ShrnkApp() {
     
     var selectedPreset by remember { mutableStateOf(VideoPreset.MEDIUM) }
     var customSizeMb by remember { mutableStateOf("") }
+    var imageQuality by remember { mutableStateOf(80) }
+    
+    val infiniteTransition = rememberInfiniteTransition()
+    val animatedGradientAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(3000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        )
+    )
 
 
     val openDocLauncher = rememberLauncherForActivityResult(
@@ -120,7 +156,7 @@ fun ShrnkApp() {
                 progressMessage = if (mime.startsWith("image")) "Compressing image…" else "Compressing video…"
 
                 val success = if (mime.startsWith("image")) {
-                    MediaCompressor.compressImage(context, src, destUri)
+                    MediaCompressor.compressImage(context, src, destUri, quality = imageQuality)
                 } else {
                     val size = customSizeMb.toIntOrNull()
                     MediaCompressor.compressVideo(
@@ -179,11 +215,32 @@ fun ShrnkApp() {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Shrnk - Media Compressor") }
+            CenterAlignedTopAppBar(
+                title = { 
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Text(
+                            "Shrnk", 
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                )
             )
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -197,17 +254,26 @@ fun ShrnkApp() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(48.dp), progress = progressFraction)
+                    CircularProgressIndicator(modifier = Modifier.size(64.dp), progress = progressFraction, strokeWidth = 6.dp)
                     Spacer(Modifier.height(16.dp))
                     val pct = String.format("%.0f%%", progressFraction * 100)
                     Text("$progressMessage $pct", style = MaterialTheme.typography.bodyLarge)
                 }
             } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = MaterialTheme.shapes.large,
+                    elevation = CardDefaults.elevatedCardElevation()
                 ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
                     if (selectedUri == null) {
                         Icon(
                             Icons.Filled.FolderOpen,
@@ -249,11 +315,34 @@ fun ShrnkApp() {
                                     textAlign = TextAlign.Center
                                 )
                                 Spacer(Modifier.height(24.dp))
+                                val mime = context.contentResolver.getType(selectedUri!!) ?: ""
+                                val isImage = mime.startsWith("image")
+                                
+                                if (isImage) {
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(200.dp)
+                                            .padding(bottom = 16.dp),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        AsyncImage(
+                                            model = selectedUri,
+                                            contentDescription = "Image preview",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                }
+                                
                                 CompressionSettings(
                                     selectedPreset = selectedPreset,
                                     onPresetSelected = { selectedPreset = it },
                                     customSizeMb = customSizeMb,
-                                    onCustomSizeChanged = { customSizeMb = it }
+                                    onCustomSizeChanged = { customSizeMb = it },
+                                    isImage = isImage,
+                                    imageQuality = imageQuality,
+                                    onImageQualityChanged = { imageQuality = it }
                                 )
                                 Spacer(Modifier.height(24.dp))
                                 Button(
@@ -280,6 +369,7 @@ fun ShrnkApp() {
                         TextButton(onClick = { selectedUri = null }) {
                             Text("Clear Selection")
                         }
+                    }
                     }
                 }
             }
