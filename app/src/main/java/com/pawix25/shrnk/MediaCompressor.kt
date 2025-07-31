@@ -20,7 +20,10 @@ import java.io.FileInputStream
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
+
+import androidx.media3.common.util.UnstableApi
 
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.VideoEncoderSettings
@@ -38,7 +41,8 @@ object MediaCompressor {
         context: Context,
         sourceUri: Uri,
         destUri: Uri,
-        quality: Int = 80
+        quality: Int = 80,
+        copyMetadata: Boolean = true
     ): Boolean = withContext(Dispatchers.IO) {
         return@withContext try {
             context.contentResolver.openInputStream(sourceUri)?.use { input ->
@@ -55,6 +59,9 @@ object MediaCompressor {
                         bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
                         out.flush()
                     }
+                }
+                if (copyMetadata) {
+                    copyExif(context, sourceUri, destUri)
                 }
             }
             true
@@ -82,7 +89,55 @@ object MediaCompressor {
         return Pair(newWidth, newHeight)
     }
 
+    private fun copyExif(context: Context, sourceUri: Uri, destUri: Uri) {
+        try {
+            context.contentResolver.openInputStream(sourceUri)?.use { sourceInputStream ->
+                context.contentResolver.openFileDescriptor(destUri, "rw")?.use { destPfd ->
+                    val sourceExif = ExifInterface(sourceInputStream)
+                    val destExif = ExifInterface(destPfd.fileDescriptor)
 
+                    val attributes = arrayOf(
+                        ExifInterface.TAG_APERTURE_VALUE,
+                        ExifInterface.TAG_DATETIME,
+                        ExifInterface.TAG_DATETIME_DIGITIZED,
+                        ExifInterface.TAG_DATETIME_ORIGINAL,
+                        ExifInterface.TAG_EXPOSURE_TIME,
+                        ExifInterface.TAG_FLASH,
+                        ExifInterface.TAG_FOCAL_LENGTH,
+                        ExifInterface.TAG_GPS_ALTITUDE,
+                        ExifInterface.TAG_GPS_ALTITUDE_REF,
+                        ExifInterface.TAG_GPS_DATESTAMP,
+                        ExifInterface.TAG_GPS_LATITUDE,
+                        ExifInterface.TAG_GPS_LATITUDE_REF,
+                        ExifInterface.TAG_GPS_LONGITUDE,
+                        ExifInterface.TAG_GPS_LONGITUDE_REF,
+                        ExifInterface.TAG_GPS_PROCESSING_METHOD,
+                        ExifInterface.TAG_GPS_TIMESTAMP,
+                        ExifInterface.TAG_IMAGE_LENGTH,
+                        ExifInterface.TAG_IMAGE_WIDTH,
+                        ExifInterface.TAG_ISO_SPEED_RATINGS,
+                        ExifInterface.TAG_MAKE,
+                        ExifInterface.TAG_MODEL,
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.TAG_WHITE_BALANCE
+                    )
+
+                    for (attribute in attributes) {
+                        val value = sourceExif.getAttribute(attribute)
+                        if (value != null) {
+                            destExif.setAttribute(attribute, value)
+                        }
+                    }
+                    destExif.saveAttributes()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+
+    @androidx.annotation.OptIn(UnstableApi::class)
     suspend fun compressVideo(
         context: Context,
         sourceUri: Uri,
@@ -90,7 +145,8 @@ object MediaCompressor {
         targetHeight: Int = 720,
         maxFileSizeMb: Int? = null,
         preset: VideoPreset? = null,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        transformer: Transformer? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val tempOut = File.createTempFile("shrnk_transcoded", ".mp4", context.cacheDir)
         val deferred = CompletableDeferred<Boolean>()

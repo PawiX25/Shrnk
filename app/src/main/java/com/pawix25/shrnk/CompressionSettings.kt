@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.ui.draw.scale
+import kotlin.math.roundToInt
 
 data class PresetInfo(
     val preset: VideoPreset,
@@ -121,7 +122,7 @@ fun CompressionSettings(
                             )
                         ) {
                             Text(
-                                "${internalImageQuality.toInt()}%",
+                                "${internalImageQuality.roundToInt()}%",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
@@ -136,7 +137,7 @@ fun CompressionSettings(
                         value = internalImageQuality,
                         onValueChange = { 
                             internalImageQuality = it
-                            onImageQualityChanged(it.toInt())
+                            onImageQualityChanged(it.roundToInt())
                         },
                         valueRange = 10f..100f,
                         steps = 8,

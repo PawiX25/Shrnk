@@ -66,6 +66,7 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.5.0")
     implementation("androidx.media3:media3-common:1.5.0")
     implementation("androidx.media3:media3-effect:1.5.0")
-    // muxer (optional but brings encoder settings bridging)
     implementation("androidx.media3:media3-muxer:1.5.0")
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
 }

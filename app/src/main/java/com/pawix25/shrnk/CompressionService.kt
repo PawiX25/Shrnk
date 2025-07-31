@@ -34,10 +34,15 @@ class CompressionService : Service() {
             val success = if (mime.startsWith("image")) {
                 MediaCompressor.compressImage(applicationContext, sourceUri, destUri)
             } else {
-                MediaCompressor.compressVideo(applicationContext, sourceUri, destUri) { progress ->
-                    updateNotification(progress)
-                    sendProgressUpdate(progress)
-                }
+                MediaCompressor.compressVideo(
+                    context = applicationContext, 
+                    sourceUri = sourceUri, 
+                    destUri = destUri,
+                    onProgress = { progress ->
+                        updateNotification(progress)
+                        sendProgressUpdate(progress)
+                    }
+                )
             }
             sendCompletionBroadcast(success, destUri)
             stopSelf()

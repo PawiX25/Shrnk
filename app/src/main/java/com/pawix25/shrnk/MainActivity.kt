@@ -1,5 +1,6 @@
 package com.pawix25.shrnk
 
+import android.content.Intent
 import android.net.Uri
 import android.content.Context
 import android.provider.OpenableColumns
@@ -22,7 +23,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Clear
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.collect
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.VideoFile
 import androidx.compose.material.icons.outlined.PhotoSizeSelectLarge
@@ -57,8 +60,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.ui.draw.alpha
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.painterResource
+import androidx.media3.transformer.Transformer
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import androidx.compose.foundation.isSystemInDarkTheme
 
 fun getFileName(context: Context, uri: Uri?): String? {
     uri ?: return null
@@ -98,32 +107,95 @@ fun getFileSize(context: Context, uri: Uri?): Long {
 }
 
 class MainActivity : ComponentActivity() {
+
+    private val settingsManager by lazy { SettingsManager(this) }
+    private var themeState by mutableStateOf("System")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installSplashScreen()
         enableEdgeToEdge()
+
+        lifecycleScope.launch {
+            settingsManager.theme.collect { theme ->
+                themeState = theme
+            }
+        }
+
         setContent {
-            ShrnkTheme {
-                ShrnkApp()
+            ShrnkTheme(darkTheme = shouldUseDarkTheme(themeState)) {
+                ShrnkApp(intent)
             }
         }
     }
 }
 
+@Composable
+private fun shouldUseDarkTheme(theme: String): Boolean {
+    return when (theme) {
+        "Light" -> false
+        "Dark" -> true
+        else -> isSystemInDarkTheme()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalAnimationApi::class)
 @Composable
-fun ShrnkApp() {
+fun ShrnkApp(intent: Intent? = null) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val settingsManager = remember { SettingsManager(context) }
+
+    val imageQuality by settingsManager.imageQuality.collectAsState(initial = 80)
+    val videoPreset by settingsManager.videoPreset.collectAsState(initial = VideoPreset.MEDIUM.name)
+    val customSizeMb by settingsManager.customSizeMb.collectAsState(initial = "")
+    val copyMetadata by settingsManager.copyMetadata.collectAsState(initial = true)
 
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var compressing by remember { mutableStateOf(false) }
     var progressMessage by remember { mutableStateOf("") }
     var progressFraction by remember { mutableStateOf(0f) }
     
-    var selectedPreset by remember { mutableStateOf(VideoPreset.MEDIUM) }
-    var customSizeMb by remember { mutableStateOf("") }
-    var imageQuality by remember { mutableStateOf(80) }
+    var selectedPreset by remember { mutableStateOf(VideoPreset.valueOf(videoPreset)) }
+    var customSizeMbState by remember { mutableStateOf(customSizeMb) }
+    var imageQualityState by remember { mutableStateOf(imageQuality) }
+
+    var compressionJob by remember { mutableStateOf<Job?>(null) }
+    val transformer = remember { MutableStateFlow<Transformer?>(null) }
+    LaunchedEffect(videoPreset) {
+        selectedPreset = VideoPreset.valueOf(videoPreset)
+    }
+    LaunchedEffect(customSizeMb) {
+        customSizeMbState = customSizeMb
+    }
+    LaunchedEffect(imageQuality) {
+        imageQualityState = imageQuality
+    }
+    LaunchedEffect(selectedPreset) {
+        coroutineScope.launch {
+            settingsManager.setVideoPreset(selectedPreset.name)
+        }
+    }
+    LaunchedEffect(customSizeMbState) {
+        coroutineScope.launch {
+            settingsManager.setCustomSizeMb(customSizeMbState)
+        }
+    }
+    LaunchedEffect(imageQualityState) {
+        coroutineScope.launch {
+            settingsManager.setImageQuality(imageQualityState)
+        }
+    }
+
+    LaunchedEffect(intent) {
+        if (intent?.action == Intent.ACTION_SEND && intent.type != null) {
+            val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            if (uri != null) {
+                selectedUri = uri
+            }
+        }
+    }
     
     val infiniteTransition = rememberInfiniteTransition()
     val animatedGradientAngle by infiniteTransition.animateFloat(
@@ -148,7 +220,7 @@ fun ShrnkApp() {
         val src = selectedUri
         if (destUri != null && src != null) {
             compressing = true
-            coroutineScope.launch {
+            compressionJob = coroutineScope.launch {
                 val mime = context.contentResolver.getType(src) ?: ""
                 val beforeBytes = getFileSize(context, src)
 
@@ -156,7 +228,7 @@ fun ShrnkApp() {
                 progressMessage = if (mime.startsWith("image")) "Compressing image…" else "Compressing video…"
 
                 val success = if (mime.startsWith("image")) {
-                    MediaCompressor.compressImage(context, src, destUri, quality = imageQuality)
+                    MediaCompressor.compressImage(context, src, destUri, quality = imageQualityState, copyMetadata = copyMetadata)
                 } else {
                     val size = customSizeMb.toIntOrNull()
                     MediaCompressor.compressVideo(
@@ -164,10 +236,10 @@ fun ShrnkApp() {
                         src,
                         destUri,
                         preset = selectedPreset,
-                        maxFileSizeMb = size
-                    ) { frac ->
-                        progressFraction = frac
-                    }
+                        maxFileSizeMb = size,
+                        onProgress = { frac -> progressFraction = frac },
+                        transformer = transformer.value
+                    )
                 }
 
                 val afterBytes = if (success) getFileSize(context, destUri) else 0L
@@ -191,7 +263,20 @@ fun ShrnkApp() {
                     "Compression failed."
                 }
 
-                snackbarHostState.showSnackbar(resultMessage)
+                val snackbarResult = snackbarHostState.showSnackbar(
+                    message = resultMessage,
+                    actionLabel = if (success) "Share" else null,
+                    duration = SnackbarDuration.Long
+                )
+                if (snackbarResult == SnackbarResult.ActionPerformed) {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = context.contentResolver.getType(destUri)
+                        putExtra(Intent.EXTRA_STREAM, destUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Share compressed file"))
+                }
+
                 if (success) {
                     selectedUri = null
                 }
@@ -234,6 +319,11 @@ fun ShrnkApp() {
                         )
                     }
                 },
+                actions = {
+                    IconButton(onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
                 )
@@ -258,6 +348,14 @@ fun ShrnkApp() {
                     Spacer(Modifier.height(16.dp))
                     val pct = String.format("%.0f%%", progressFraction * 100)
                     Text("$progressMessage $pct", style = MaterialTheme.typography.bodyLarge)
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = {
+                        compressionJob?.cancel()
+                        transformer.value?.cancel()
+                        compressing = false
+                    }) {
+                        Text("Cancel")
+                    }
                 }
             } else {
                 Card(
@@ -338,11 +436,11 @@ fun ShrnkApp() {
                                 CompressionSettings(
                                     selectedPreset = selectedPreset,
                                     onPresetSelected = { selectedPreset = it },
-                                    customSizeMb = customSizeMb,
-                                    onCustomSizeChanged = { customSizeMb = it },
+                                    customSizeMb = customSizeMbState,
+                                    onCustomSizeChanged = { customSizeMbState = it },
                                     isImage = isImage,
-                                    imageQuality = imageQuality,
-                                    onImageQualityChanged = { imageQuality = it }
+                                    imageQuality = imageQualityState,
+                                    onImageQualityChanged = { imageQualityState = it }
                                 )
                                 Spacer(Modifier.height(24.dp))
                                 Button(
